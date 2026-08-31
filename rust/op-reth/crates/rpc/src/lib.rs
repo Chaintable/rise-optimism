@@ -8,6 +8,8 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[allow(missing_docs)]
+pub mod debank;
 pub mod debug;
 pub mod engine;
 pub mod error;
@@ -17,6 +19,8 @@ pub mod metrics;
 pub mod miner;
 pub mod sequencer;
 pub mod state;
+#[allow(missing_docs)]
+pub mod trace;
 pub mod witness;
 
 #[cfg(feature = "client")]
