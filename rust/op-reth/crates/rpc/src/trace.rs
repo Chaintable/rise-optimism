@@ -54,6 +54,35 @@ fn get_l1_fee(receipt: &OpTransactionReceipt) -> Option<u128> {
     receipt.l1_block_info.l1_fee
 }
 
+fn ensure_receipt_count(tx_count: usize, receipt_count: usize) -> Result<(), EthApiError> {
+    if tx_count != receipt_count {
+        return Err(EthApiError::EvmCustom(format!(
+            "transaction/receipt count mismatch: {tx_count} transactions, {receipt_count} receipts"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_changeset_coverage(
+    block_number: u64,
+    has_account_changes: bool,
+    has_storage_changes: bool,
+    account_changeset_count: usize,
+    storage_changeset_count: usize,
+) -> Result<(), EthApiError> {
+    if has_account_changes && account_changeset_count == 0 {
+        return Err(EthApiError::EvmCustom(format!(
+            "account changesets unavailable for block {block_number}"
+        )));
+    }
+    if has_storage_changes && storage_changeset_count == 0 {
+        return Err(EthApiError::EvmCustom(format!(
+            "storage changesets unavailable for block {block_number}"
+        )));
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl<Eth> OpDebankTraceApiServer for OpDebankTraceApiImpl<Eth>
 where
@@ -86,6 +115,7 @@ where
         let Some(block) = block else {
             return Err(EthApiError::HeaderNotFound(block_id).into());
         };
+        let block_id = block.hash().into();
 
         let debank_block: DebankBlock = block.as_ref().into();
         let debank_header = build_rpc_header(&block);
@@ -117,9 +147,10 @@ where
             return Err(EthApiError::HeaderNotFound(block_id).into());
         };
 
-        let mut debank_txs: Vec<DebankTransaction> =
-            Vec::with_capacity(block.body().transactions().len());
-        for (tx, receipt) in block.body().transactions().iter().zip(&receipts) {
+        let transactions = block.body().transactions();
+        ensure_receipt_count(transactions.len(), receipts.len())?;
+        let mut debank_txs: Vec<DebankTransaction> = Vec::with_capacity(transactions.len());
+        for (tx, receipt) in transactions.iter().zip(&receipts) {
             let deposit_nonce = get_deposit_nonce(receipt);
             let l1_fee = get_l1_fee(receipt);
             debank_txs.push(DebankTransaction::from((receipt, tx, deposit_nonce, l1_fee)));
@@ -132,21 +163,6 @@ where
 
         let mut block_file =
             BlockFile { block: debank_block, transactions: debank_txs, ..Default::default() };
-
-        if parent_block.state_root() == block.state_root() {
-            let state_diff = BlockStorageDiff {
-                hash: block.state_root(),
-                parent_hash: parent_block.state_root(),
-                ..Default::default()
-            };
-            let validation_hash = block_file.validation().validation_hash;
-            return Ok(DebankOutPut {
-                block_file,
-                header: debank_header,
-                state_diff: alloy_rlp::encode(state_diff).into(),
-                validation_hash,
-            });
-        }
 
         let (trace_results, mut state_diff, change_addresses) =
             trace_all_block(eth, block_id).await?;
@@ -287,12 +303,25 @@ where
         db.merge_transitions(BundleRetention::PlainState);
         let bundle = db.take_bundle();
         let change_addresses = get_storage_contracts_from_bundle(&bundle);
+        let has_account_changes = bundle.state.values().any(|account| account.is_info_changed());
+        let has_storage_changes = bundle
+            .state
+            .values()
+            .any(|account| account.storage.values().any(|slot| slot.is_changed()));
         let account_changesets = this
             .provider()
             .account_block_changeset(block_number)
             .map_err(Eth::Error::from_eth_err)?;
         let storage_changesets =
             this.provider().storage_changeset(block_number).map_err(Eth::Error::from_eth_err)?;
+        ensure_changeset_coverage(
+            block_number,
+            has_account_changes,
+            has_storage_changes,
+            account_changesets.len(),
+            storage_changesets.len(),
+        )
+        .map_err(Eth::Error::from_eth_err)?;
         let storage_diff = get_storage_diffs_from_changesets(
             account_changesets,
             storage_changesets,
@@ -306,4 +335,25 @@ where
         Ok((results, storage_diff, change_addresses))
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ensure_changeset_coverage, ensure_receipt_count};
+
+    #[test]
+    fn rejects_transaction_receipt_count_mismatch() {
+        assert!(ensure_receipt_count(2, 1).is_err());
+        assert!(ensure_receipt_count(2, 2).is_ok());
+    }
+
+    #[test]
+    fn rejects_missing_required_changesets() {
+        assert!(ensure_changeset_coverage(42, true, false, 0, 1).is_err());
+        assert!(ensure_changeset_coverage(42, false, true, 1, 0).is_err());
+        assert!(ensure_changeset_coverage(42, true, true, 1, 1).is_ok());
+        assert!(ensure_changeset_coverage(42, true, false, 1, 0).is_ok());
+        assert!(ensure_changeset_coverage(42, false, true, 0, 1).is_ok());
+        assert!(ensure_changeset_coverage(42, false, false, 0, 0).is_ok());
+    }
 }

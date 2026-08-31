@@ -348,21 +348,24 @@ pub struct DebankTransaction {
     pub value: U256,
 }
 
+fn calculate_gas_price(effective_gas_price: u128, gas_used: u64, l1_fee: Option<u128>) -> U256 {
+    let effective_gas_price = U256::from(effective_gas_price);
+    if let Some(l1_fee) = l1_fee &&
+        gas_used != 0
+    {
+        return (U256::from(l1_fee) / U256::from(gas_used)) + effective_gas_price;
+    }
+    effective_gas_price
+}
+
 impl<R, T> From<(&R, &T, Option<u64>, Option<u128>)> for DebankTransaction
 where
     R: ReceiptResponse,
     T: Transaction,
 {
     fn from((receipt, tx, deposit_nonce, l1_fee): (&R, &T, Option<u64>, Option<u128>)) -> Self {
-        let gas_price = l1_fee.map_or_else(
-            || U256::from(receipt.effective_gas_price()),
-            |l1_fee| {
-                let effective_gas_price = U256::from(receipt.effective_gas_price());
-                let gas_used = U256::from(receipt.gas_used());
-                let l1_fee = U256::from(l1_fee);
-                (l1_fee / gas_used) + effective_gas_price
-            },
-        );
+        let gas_price =
+            calculate_gas_price(receipt.effective_gas_price(), receipt.gas_used(), l1_fee);
         Self {
             id: receipt.transaction_hash().to_string(),
             from: receipt.from(),
@@ -905,4 +908,16 @@ pub fn build_genesis_txs_and_traces(
     });
 
     (txs, traces)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::calculate_gas_price;
+    use alloy_primitives::U256;
+
+    #[test]
+    fn zero_gas_used_does_not_divide_l1_fee() {
+        assert_eq!(calculate_gas_price(7, 0, Some(11)), U256::from(7));
+        assert_eq!(calculate_gas_price(7, 2, Some(10)), U256::from(12));
+    }
 }
