@@ -79,7 +79,7 @@ docker buildx imagetools inspect \
 docker run --rm \
   public.ecr.aws/b2h7a5c4/chaintable/rise-writer:<revision> --version
 docker run --rm \
-  public.ecr.aws/b2h7a5c4/chaintable/rise-op-node:<revision> --version
+  public.ecr.aws/b2h7a5c4/chaintable/rise-op-node:<revision> op-node --version
 ```
 
 ## Run
