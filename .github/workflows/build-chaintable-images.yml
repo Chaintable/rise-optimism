@@ -1,0 +1,174 @@
+name: Build Chaintable images
+
+on:
+  pull_request:
+    branches:
+      - rise/op-reth-v2.3.0
+  push:
+    branches:
+      - rise/op-reth-v2.3.0
+  release:
+    types:
+      - created
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  REGISTRY: public.ecr.aws/b2h7a5c4/chaintable
+
+jobs:
+  build:
+    name: build-${{ matrix.component }}-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: op-reth
+            image: rise-writer
+            context: rust
+            dockerfile: rust/op-reth/DockerfileOp
+            target: ""
+            platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - component: op-reth
+            image: rise-writer
+            context: rust
+            dockerfile: rust/op-reth/DockerfileOp
+            target: ""
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+          - component: op-node
+            image: rise-op-node
+            context: .
+            dockerfile: ops/docker/op-stack-go/Dockerfile
+            target: op-node-target
+            platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - component: op-node
+            image: rise-op-node
+            context: .
+            dockerfile: ops/docker/op-stack-go/Dockerfile
+            target: op-node-target
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set image metadata
+        id: metadata
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            revision="${GITHUB_REF_NAME//\//-}"
+          else
+            revision="$(git rev-parse --short=8 HEAD)"
+          fi
+          echo "REVISION=${revision}" >> "$GITHUB_ENV"
+          echo "git_date=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Public ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ matrix.image }}:${{ matrix.arch }}-${{ env.REVISION }}
+          build-args: |
+            BUILD_PROFILE=maxperf
+            GIT_COMMIT=${{ github.sha }}
+            GIT_DATE=${{ steps.metadata.outputs.git_date }}
+            OP_NODE_VERSION=${{ env.REVISION }}
+          cache-from: type=gha,scope=${{ matrix.component }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}-${{ matrix.arch }}
+          provenance: false
+          sbom: false
+
+  manifest:
+    name: manifest-${{ matrix.image }}
+    needs: build
+    strategy:
+      matrix:
+        image:
+          - rise-writer
+          - rise-op-node
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set revision
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            revision="${GITHUB_REF_NAME//\//-}"
+          else
+            revision="$(git rev-parse --short=8 HEAD)"
+          fi
+          echo "REVISION=${revision}" >> "$GITHUB_ENV"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Public ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      - name: Create and push multi-arch manifest
+        run: |
+          docker buildx imagetools create \
+            --tag "${REGISTRY}/${{ matrix.image }}:${REVISION}" \
+            "${REGISTRY}/${{ matrix.image }}:amd64-${REVISION}" \
+            "${REGISTRY}/${{ matrix.image }}:arm64-${REVISION}"
