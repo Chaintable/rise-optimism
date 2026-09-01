@@ -540,8 +540,7 @@ impl From<&CallTraceNode> for DebankTrace {
             CallKind::CallCode |
             CallKind::DelegateCall |
             CallKind::AuthCall => "call".to_string(),
-            CallKind::Create => "create".to_string(),
-            CallKind::Create2 => "create2".to_string(),
+            CallKind::Create | CallKind::Create2 => "create".to_string(),
         };
         let call_type = if call_create_type == "call" {
             trace.kind.to_string().to_lowercase()
@@ -912,8 +911,22 @@ pub fn build_genesis_txs_and_traces(
 
 #[cfg(test)]
 mod tests {
-    use super::calculate_gas_price;
+    use super::{CallKind, CallTraceNode, DebankTrace, calculate_gas_price};
     use alloy_primitives::U256;
+    use revm_inspectors::tracing::types::CallTrace;
+
+    #[test]
+    fn create2_is_normalized_to_create() {
+        let node = CallTraceNode {
+            trace: CallTrace { kind: CallKind::Create2, ..Default::default() },
+            ..Default::default()
+        };
+
+        let trace = DebankTrace::from(&node);
+
+        assert_eq!(trace.call_create_type, "create");
+        assert!(trace.call_type.is_empty());
+    }
 
     #[test]
     fn zero_gas_used_does_not_divide_l1_fee() {
