@@ -55,6 +55,24 @@ docker buildx bake --progress plain --load -f docker-bake.hcl op-reth
 Override `REGISTRY` / `REPOSITORY` env vars to retag for a private registry. `--load` only
 works with a single platform; drop it and use `--push` for multi-arch.
 
+### Chaintable images
+
+The Chaintable workflow builds the RISE execution client for amd64 and arm64 and publishes
+immutable tags to Public ECR as `public.ecr.aws/b2h7a5c4/chaintable/rise-writer:<revision>`.
+
+Pull requests and pushes to `rise/op-reth-v2.3.0` use the eight-character Git commit as
+`<revision>`. GitHub releases use the release tag, with `/` replaced by `-`. The workflow also
+publishes `amd64-<revision>` and `arm64-<revision>` platform tags and does not publish `latest`.
+
+Verify the multi-arch image before deployment:
+
+```sh
+docker buildx imagetools inspect \
+  public.ecr.aws/b2h7a5c4/chaintable/rise-writer:<revision>
+docker run --rm \
+  public.ecr.aws/b2h7a5c4/chaintable/rise-writer:<revision> --version
+```
+
 ## Run
 
 Snapshot download and full runbook live in

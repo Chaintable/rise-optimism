@@ -49,6 +49,7 @@ use reth_optimism_rpc::{
     eth::{OpEthApiBuilder, ext::OpEthExtApi},
     historical::{HistoricalRpc, HistoricalRpcClient},
     miner::{MinerApiExtServer, OpMinerExtApi},
+    trace::{OpDebankTraceApiImpl, OpDebankTraceApiServer},
     witness::{DebugExecutionWitnessApiServer, OpDebugWitnessApi},
 };
 use reth_optimism_storage::OpStorage;
@@ -333,7 +334,11 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        self.add_ons_builder().build()
+        self.add_ons_builder().build().extend_rpc_modules(|ctx| {
+            let debank_api = OpDebankTraceApiImpl::new(ctx.registry.eth_api().clone());
+            ctx.modules.merge_if_module_configured(RethRpcModule::Trace, debank_api.into_rpc())?;
+            Ok(())
+        })
     }
 }
 

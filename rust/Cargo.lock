@@ -4902,7 +4902,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "system-configuration",
  "tokio",
  "tower-layer",
@@ -7246,6 +7246,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8907,7 +8917,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -8945,7 +8955,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -11561,7 +11571,10 @@ version = "1.11.3"
 dependencies = [
  "alloy-consensus",
  "alloy-eips 2.0.5",
+ "alloy-evm",
+ "alloy-genesis",
  "alloy-json-rpc",
+ "alloy-network",
  "alloy-op-evm",
  "alloy-op-hardforks",
  "alloy-primitives",
@@ -11580,6 +11593,7 @@ dependencies = [
  "jsonrpsee",
  "jsonrpsee-core",
  "jsonrpsee-types",
+ "md-5",
  "metrics",
  "op-alloy-consensus",
  "op-alloy-network",
@@ -11591,6 +11605,7 @@ dependencies = [
  "reth-basic-payload-builder",
  "reth-chain-state",
  "reth-chainspec",
+ "reth-db-api",
  "reth-evm",
  "reth-metrics",
  "reth-node-api",
@@ -11616,9 +11631,13 @@ dependencies = [
  "reth-storage-api",
  "reth-tasks",
  "reth-transaction-pool",
+ "reth-trie",
  "revm",
+ "revm-bytecode",
+ "revm-inspectors",
  "serde",
  "serde_json",
+ "sha1",
  "strum",
  "thiserror 2.0.18",
  "tokio",
