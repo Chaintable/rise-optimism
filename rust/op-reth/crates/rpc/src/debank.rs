@@ -349,7 +349,8 @@ pub struct DebankTransaction {
 }
 
 /// Folds fees charged outside L2 gas (L1 data fee and operator fee) into the gas price, so that
-/// `gas_price * gas_used` matches the fee the sender paid.
+/// `gas_price * gas_used` is the fee the sender paid, short by less than `gas_used` wei from the
+/// integer division.
 pub(crate) fn calculate_gas_price(
     effective_gas_price: u128,
     gas_used: u64,
