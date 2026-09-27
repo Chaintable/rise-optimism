@@ -4,15 +4,20 @@ use crate::debank::{
     get_storage_contracts_from_genesis, get_storage_diffs_from_changesets,
 };
 use alloy_consensus::{BlockHeader, transaction::TxHashRef};
-use alloy_eips::BlockId;
+use alloy_eips::{BlockId, eip2718::Encodable2718};
 use alloy_evm::evm::EvmFactoryExt;
+use alloy_network::ReceiptResponse;
+use alloy_primitives::U256;
 use alloy_rpc_types_eth::Header;
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use op_alloy_consensus::OpReceipt;
 use op_alloy_rpc_types::OpTransactionReceipt;
+use op_revm::{L1BlockInfo, OpSpecId};
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::ConfigureEvm;
+use reth_optimism_evm::{extract_l1_info, revm_spec_by_timestamp_after_bedrock};
+use reth_optimism_forks::OpHardforks;
 use reth_primitives_traits::{BlockBody, RecoveredBlock};
 use reth_revm::{database::StateProviderDatabase, db::State};
 use reth_rpc_eth_api::{
@@ -54,6 +59,24 @@ fn get_l1_fee(receipt: &OpTransactionReceipt) -> Option<u128> {
     receipt.l1_block_info.l1_fee
 }
 
+/// Operator fee charged on top of L2 gas since Isthmus, using the same function as execution.
+fn get_operator_fee(
+    l1_block_info: &L1BlockInfo,
+    encoded_tx: &[u8],
+    gas_used: u64,
+    spec: OpSpecId,
+) -> U256 {
+    // The Isthmus activation block still carries Ecotone-format L1 info without operator fee
+    // params; the fee is zero there.
+    if !spec.is_enabled_in(OpSpecId::ISTHMUS) ||
+        l1_block_info.operator_fee_scalar.is_none() ||
+        l1_block_info.operator_fee_constant.is_none()
+    {
+        return U256::ZERO;
+    }
+    l1_block_info.operator_fee_charge(encoded_tx, U256::from(gas_used), spec)
+}
+
 fn ensure_receipt_count(tx_count: usize, receipt_count: usize) -> Result<(), EthApiError> {
     if tx_count != receipt_count {
         return Err(EthApiError::EvmCustom(format!(
@@ -89,8 +112,9 @@ where
     Eth: TraceExt + EthBlocks + LoadReceipt + 'static,
     Eth: RpcNodeCore,
     <Eth as EthApiTypes>::NetworkTypes: RpcTypes<Receipt = OpTransactionReceipt>,
-    <Eth as RpcNodeCore>::Provider:
-        ChainSpecProvider<ChainSpec: EthChainSpec> + ChangeSetReader + StorageChangeSetReader,
+    <Eth as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec: EthChainSpec + OpHardforks>
+        + ChangeSetReader
+        + StorageChangeSetReader,
 {
     async fn debank_block(&self, block_id: BlockId) -> RpcResult<DebankOutPut> {
         Ok(self.trace_debank_block_inner(block_id).await.map_err(Into::into)?)
@@ -102,8 +126,9 @@ where
     Eth: TraceExt + EthBlocks + LoadReceipt + 'static,
     Eth: RpcNodeCore,
     <Eth as EthApiTypes>::NetworkTypes: RpcTypes<Receipt = OpTransactionReceipt>,
-    <Eth as RpcNodeCore>::Provider:
-        ChainSpecProvider<ChainSpec: EthChainSpec> + ChangeSetReader + StorageChangeSetReader,
+    <Eth as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec: EthChainSpec + OpHardforks>
+        + ChangeSetReader
+        + StorageChangeSetReader,
 {
     async fn trace_debank_block_inner(
         &self,
@@ -147,13 +172,20 @@ where
             return Err(EthApiError::HeaderNotFound(block_id).into());
         };
 
+        let chain_spec = reth_rpc_eth_api::RpcNodeCore::provider(eth).chain_spec();
+        let spec = revm_spec_by_timestamp_after_bedrock(&chain_spec, block.timestamp());
+        let l1_block_info = extract_l1_info(block.body()).map_err(|err| {
+            EthApiError::EvmCustom(format!("failed to extract L1 block info: {err}"))
+        })?;
+
         let transactions = block.body().transactions();
         ensure_receipt_count(transactions.len(), receipts.len())?;
         let mut debank_txs: Vec<DebankTransaction> = Vec::with_capacity(transactions.len());
         for (tx, receipt) in transactions.iter().zip(&receipts) {
             let deposit_nonce = get_deposit_nonce(receipt);
-            let l1_fee = get_l1_fee(receipt);
-            debank_txs.push(DebankTransaction::from((receipt, tx, deposit_nonce, l1_fee)));
+            let fee_outside_gas = U256::from(get_l1_fee(receipt).unwrap_or_default()) +
+                get_operator_fee(&l1_block_info, &tx.encoded_2718(), receipt.gas_used(), spec);
+            debank_txs.push(DebankTransaction::from((receipt, tx, deposit_nonce, fee_outside_gas)));
         }
 
         let parent_block = eth.recovered_block(block.parent_hash().into()).await?;
@@ -339,7 +371,77 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_changeset_coverage, ensure_receipt_count};
+    use super::{ensure_changeset_coverage, ensure_receipt_count, get_operator_fee};
+    use crate::debank::calculate_gas_price;
+    use alloy_primitives::{U256, hex};
+    use op_revm::{L1BlockInfo, OpSpecId};
+    use reth_optimism_evm::parse_l1_info;
+
+    // Only deposit (0x7e) and empty inputs are exempt from the operator fee, so an EIP-1559
+    // envelope type byte is enough to stand for a regular transaction.
+    const REGULAR_TX: &[u8] = &[0x02];
+
+    #[test]
+    fn operator_fee_is_folded_into_gas_price() {
+        // BOB mainnet block 38,821,851 L1 info input (Jovian), and receipt values of tx
+        // 0xc6e0e46057ae5c1d5c251456bdd82ac9dbfe274b22d2eb9b06df8986e551cddf. The
+        // OperatorFeeVault balance rose by 15_000_000_000_000 wei in this block.
+        let l1_block_info = parse_l1_info(&hex!(
+            "3db6be2b001e8480000955060000000000000004000000006ab8f29700000000018dc5200000000000000000000000000000000000000000000000000000000003ea758700000000000000000000000000000000000000000000000000000000003b927cc8d0ea7508cfe24b335f09e985abf1e80cc7bc6996339304fe6698e418be29aa00000000000000000000000008f9f14ff43e112b18c96f0986f28cb1878f1d110000000000000da475abf0000190"
+        ))
+        .unwrap();
+        let operator_fee = get_operator_fee(&l1_block_info, REGULAR_TX, 123_359, OpSpecId::JOVIAN);
+        assert_eq!(operator_fee, U256::from(15_000_000_000_000u64));
+
+        let l1_fee = U256::from(1_123_409_073_565u64);
+        // The pipeline published 66_718_090 for this tx when only the L1 fee was folded in.
+        assert_eq!(calculate_gas_price(57_611_263, 123_359, l1_fee), U256::from(66_718_090));
+        assert_eq!(
+            calculate_gas_price(57_611_263, 123_359, l1_fee + operator_fee),
+            U256::from(188_314_406)
+        );
+    }
+
+    #[test]
+    fn zero_operator_fee_params_keep_gas_price() {
+        // RISE mainnet block 20,663,202 L1 info input: operator fee params are zero.
+        let l1_block_info = parse_l1_info(&hex!(
+            "3db6be2b00000000000000000000000000000003000000006a96d12f00000000018af044000000000000000000000000000000000000000000000000000000000e3d38200000000000000000000000000000000000000000000000000000000000bc6dc7e900ef1ecebbd25413b179d043ef0bae37023eae716e748837f92929a4c5ee380000000000000000000000000ae4b35f7f5efeb4c651684e1bca12993dcbb67d0000000000000000000000000000"
+        ))
+        .unwrap();
+        let operator_fee = get_operator_fee(&l1_block_info, REGULAR_TX, 641_659, OpSpecId::JOVIAN);
+        assert_eq!(operator_fee, U256::ZERO);
+        assert_eq!(calculate_gas_price(1_001_001, 641_659, operator_fee), U256::from(1_001_001));
+    }
+
+    #[test]
+    fn operator_fee_follows_execution_rules() {
+        let l1_block_info = L1BlockInfo {
+            operator_fee_scalar: Some(U256::from(2)),
+            operator_fee_constant: Some(U256::from(50)),
+            ..Default::default()
+        };
+        // Jovian: gas * scalar * 100 + constant.
+        assert_eq!(
+            get_operator_fee(&l1_block_info, REGULAR_TX, 10, OpSpecId::JOVIAN),
+            U256::from(2_050)
+        );
+        // Isthmus: gas * scalar / 1e6 + constant.
+        assert_eq!(
+            get_operator_fee(&l1_block_info, REGULAR_TX, 1_000_000, OpSpecId::ISTHMUS),
+            U256::from(52)
+        );
+        assert_eq!(get_operator_fee(&l1_block_info, &[0x7e], 10, OpSpecId::JOVIAN), U256::ZERO);
+        assert_eq!(
+            get_operator_fee(&l1_block_info, REGULAR_TX, 10, OpSpecId::HOLOCENE),
+            U256::ZERO
+        );
+        // Isthmus activation block: Ecotone-format L1 info carries no operator fee params.
+        assert_eq!(
+            get_operator_fee(&L1BlockInfo::default(), REGULAR_TX, 10, OpSpecId::ISTHMUS),
+            U256::ZERO
+        );
+    }
 
     #[test]
     fn rejects_transaction_receipt_count_mismatch() {
