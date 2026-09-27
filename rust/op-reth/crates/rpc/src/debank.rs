@@ -348,24 +348,29 @@ pub struct DebankTransaction {
     pub value: U256,
 }
 
-fn calculate_gas_price(effective_gas_price: u128, gas_used: u64, l1_fee: Option<u128>) -> U256 {
+/// Folds fees charged outside L2 gas (L1 data fee and operator fee) into the gas price, so that
+/// `gas_price * gas_used` is the fee the sender paid, short by less than `gas_used` wei from the
+/// integer division.
+pub(crate) fn calculate_gas_price(
+    effective_gas_price: u128,
+    gas_used: u64,
+    fee_outside_gas: U256,
+) -> U256 {
     let effective_gas_price = U256::from(effective_gas_price);
-    if let Some(l1_fee) = l1_fee &&
-        gas_used != 0
-    {
-        return (U256::from(l1_fee) / U256::from(gas_used)) + effective_gas_price;
+    if gas_used != 0 {
+        return (fee_outside_gas / U256::from(gas_used)) + effective_gas_price;
     }
     effective_gas_price
 }
 
-impl<R, T> From<(&R, &T, Option<u64>, Option<u128>)> for DebankTransaction
+impl<R, T> From<(&R, &T, Option<u64>, U256)> for DebankTransaction
 where
     R: ReceiptResponse,
     T: Transaction,
 {
-    fn from((receipt, tx, deposit_nonce, l1_fee): (&R, &T, Option<u64>, Option<u128>)) -> Self {
+    fn from((receipt, tx, deposit_nonce, fee_outside_gas): (&R, &T, Option<u64>, U256)) -> Self {
         let gas_price =
-            calculate_gas_price(receipt.effective_gas_price(), receipt.gas_used(), l1_fee);
+            calculate_gas_price(receipt.effective_gas_price(), receipt.gas_used(), fee_outside_gas);
         Self {
             id: receipt.transaction_hash().to_string(),
             from: receipt.from(),
@@ -930,7 +935,7 @@ mod tests {
 
     #[test]
     fn zero_gas_used_does_not_divide_l1_fee() {
-        assert_eq!(calculate_gas_price(7, 0, Some(11)), U256::from(7));
-        assert_eq!(calculate_gas_price(7, 2, Some(10)), U256::from(12));
+        assert_eq!(calculate_gas_price(7, 0, U256::from(11)), U256::from(7));
+        assert_eq!(calculate_gas_price(7, 2, U256::from(10)), U256::from(12));
     }
 }
