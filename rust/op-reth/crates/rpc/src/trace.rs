@@ -1,7 +1,10 @@
-use crate::debank::{
-    BlockFile, BlockStorageDiff, DebankBlock, DebankOutPut, DebankTransaction, build_debank_traces,
-    build_genesis_txs_and_traces, get_storage_contracts_from_bundle,
-    get_storage_contracts_from_genesis, get_storage_diffs_from_changesets,
+use crate::{
+    debank::{
+        BlockFile, BlockStorageDiff, DebankBlock, DebankOutPut, DebankTransaction,
+        build_debank_traces, build_genesis_txs_and_traces, get_storage_contracts_from_bundle,
+        get_storage_contracts_from_genesis, get_storage_diffs_from_changesets,
+    },
+    debank_capture::{BlockTraces, DebankTraceCache, debank_tracing_config, trace_cache_key},
 };
 use alloy_consensus::{BlockHeader, transaction::TxHashRef};
 use alloy_eips::{BlockId, eip2718::Encodable2718};
@@ -27,8 +30,8 @@ use reth_rpc_eth_api::{
 use reth_rpc_eth_types::{EthApiError, cache::db::StateCacheDb};
 use reth_storage_api::{ChangeSetReader, StorageChangeSetReader};
 use revm::{context_interface::Block, database::states::bundle_state::BundleRetention};
-use revm_bytecode::opcode::OpCode;
-use revm_inspectors::tracing::{OpcodeFilter, TracingInspector, TracingInspectorConfig};
+use revm_inspectors::tracing::TracingInspector;
+use std::sync::Arc;
 
 #[rpc(server, namespace = "trace")]
 pub trait OpDebankTraceApi {
@@ -39,11 +42,12 @@ pub trait OpDebankTraceApi {
 #[derive(Debug)]
 pub struct OpDebankTraceApiImpl<Eth> {
     eth: Eth,
+    cache: Option<Arc<DebankTraceCache>>,
 }
 
 impl<Eth> OpDebankTraceApiImpl<Eth> {
-    pub fn new(eth: Eth) -> Self {
-        Self { eth }
+    pub fn new(eth: Eth, cache: Option<Arc<DebankTraceCache>>) -> Self {
+        Self { eth, cache }
     }
 }
 
@@ -207,8 +211,14 @@ where
         let mut block_file =
             BlockFile { block: debank_block, transactions: debank_txs, ..Default::default() };
 
-        let (trace_results, mut state_diff, change_addresses) =
-            trace_all_block(eth, block_id).await?;
+        let cached = self.cache.as_ref().and_then(|cache| {
+            cache
+                .take(&trace_cache_key(block.header(), transactions.iter().map(|tx| *tx.tx_hash())))
+        });
+        let (trace_results, mut state_diff, change_addresses) = match cached {
+            Some(traces) => trace_cached_block(eth, block.hash(), block.number(), traces).await?,
+            None => trace_all_block(eth, block_id).await?,
+        };
 
         for (trace, error_trace, event, error_event) in trace_results {
             block_file.traces.extend(trace);
@@ -312,16 +322,10 @@ where
         let log_index_cell = std::cell::RefCell::new(0usize);
         let mut idx = 0u64;
 
-        let mut trace_cfg = TracingInspectorConfig::default_parity()
-            .set_steps(true)
-            .set_record_logs(true)
-            .set_exclude_precompile_calls(false);
-        trace_cfg.record_opcodes_filter = Some(OpcodeFilter::new().enabled(OpCode::SSTORE));
-
         let results: Vec<TraceEntry> = this
             .evm_config()
             .evm_factory()
-            .create_tracer(&mut db, evm_env, TracingInspector::new(trace_cfg))
+            .create_tracer(&mut db, evm_env, TracingInspector::new(debank_tracing_config()))
             .try_trace_many(block.transactions_recovered(), |mut ctx| {
                 use alloy_rpc_types_eth::TransactionInfo;
                 let tx_info = TransactionInfo {
@@ -365,6 +369,56 @@ where
             storage_changesets.len(),
         )
         .map_err(Eth::Error::from_eth_err)?;
+        let storage_diff = get_storage_diffs_from_changesets(
+            account_changesets,
+            storage_changesets,
+            StateProviderDatabase::new(StateProviderTraitObjWrapper(post_state)),
+        )
+        .map_err(|err| {
+            Eth::Error::from_eth_err(EthApiError::EvmCustom(format!(
+                "failed to build state diff from changesets: {err}"
+            )))
+        })?;
+        Ok((results, storage_diff, change_addresses))
+    })
+    .await
+}
+
+/// Same output as [`trace_all_block`], from the traces recorded when the block was imported.
+async fn trace_cached_block<Eth>(
+    eth: &Eth,
+    block_hash: alloy_primitives::B256,
+    block_number: u64,
+    traces: BlockTraces,
+) -> Result<(Vec<TraceEntry>, BlockStorageDiff, Vec<alloy_primitives::Address>), Eth::Error>
+where
+    Eth: TraceExt + RpcNodeCore + 'static,
+    Eth::Error: FromEthApiError,
+    <Eth as RpcNodeCore>::Provider: ChangeSetReader + StorageChangeSetReader,
+{
+    use reth_rpc_eth_types::cache::db::StateProviderTraitObjWrapper;
+
+    eth.spawn_blocking_io_fut(move |this| async move {
+        let post_state = this.state_at_block_id(block_hash.into()).await?;
+
+        let log_index_cell = std::cell::RefCell::new(0usize);
+        let results: Vec<TraceEntry> = traces
+            .into_iter()
+            .map(|(tx_hash, traces)| build_debank_traces(tx_hash, traces, &log_index_cell))
+            .collect();
+
+        let account_changesets = this
+            .provider()
+            .account_block_changeset(block_number)
+            .map_err(Eth::Error::from_eth_err)?;
+        let storage_changesets =
+            this.provider().storage_changeset(block_number).map_err(Eth::Error::from_eth_err)?;
+        // A block's storage changesets cover exactly the slots it changed, so this is the same
+        // address set that `get_storage_contracts_from_bundle` returns after re-execution.
+        let mut change_addresses: Vec<_> =
+            storage_changesets.iter().map(|(key, _)| key.address()).collect();
+        change_addresses.sort_unstable();
+        change_addresses.dedup();
         let storage_diff = get_storage_diffs_from_changesets(
             account_changesets,
             storage_changesets,

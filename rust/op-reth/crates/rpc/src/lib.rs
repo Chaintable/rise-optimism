@@ -10,6 +10,7 @@
 
 #[allow(missing_docs)]
 pub mod debank;
+pub mod debank_capture;
 pub mod debug;
 pub mod engine;
 pub mod error;
