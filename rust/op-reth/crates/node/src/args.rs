@@ -154,6 +154,11 @@ pub struct RollupArgs {
         default_value = "v1"
     )]
     pub proofs_history_storage_version: ProofsStorageVersion,
+
+    /// Number of recently imported blocks whose call traces are kept in memory for
+    /// `trace_debankBlock`, so it can skip re-executing them. 0 disables recording.
+    #[arg(long = "debank.trace-cache-blocks", default_value_t = 0)]
+    pub debank_trace_cache_blocks: usize,
 }
 
 impl Default for RollupArgs {
@@ -177,6 +182,7 @@ impl Default for RollupArgs {
             proofs_history_window: 1_296_000,
             proofs_history_verification_interval: 0,
             proofs_history_storage_version: ProofsStorageVersion::V1,
+            debank_trace_cache_blocks: 0,
         }
     }
 }
