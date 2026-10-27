@@ -75,7 +75,7 @@ where
         OpEvm<DB, I, OpFpvmPrecompiles<H, O>, FpvmOpTx>;
     type Context<DB: Database> = OpEvmContext<DB>;
     type Tx = FpvmOpTx;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError, OpTxError>;
+    type Error<DBError: revm::database_interface::DBErrorMarker> = EVMError<DBError, OpTxError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type Precompiles = OpFpvmPrecompiles<H, O>;

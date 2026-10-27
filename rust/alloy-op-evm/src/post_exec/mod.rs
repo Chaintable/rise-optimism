@@ -192,7 +192,7 @@ where
         PostExecEvmAdapter<F::Evm<DB, I>, F, DB, I>;
     type Context<DB: Database> = F::Context<DB>;
     type Tx = F::Tx;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> = F::Error<DBError>;
+    type Error<DBError: revm::database_interface::DBErrorMarker> = F::Error<DBError>;
     type HaltReason = F::HaltReason;
     type Spec = F::Spec;
     type BlockEnv = F::BlockEnv;

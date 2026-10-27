@@ -112,8 +112,7 @@ fn test_setup_custom_precompiles() {
             OpEvm<DB, I, Self::Precompiles, OpTx>;
         type Context<DB: Database> = OpEvmContext<DB>;
         type Tx = OpTx;
-        type Error<DBError: core::error::Error + Send + Sync + 'static> =
-            EVMError<DBError, OpTxError>;
+        type Error<DBError: revm::database_interface::DBErrorMarker> = EVMError<DBError, OpTxError>;
         type HaltReason = OpHaltReason;
         type Spec = OpSpecId;
         type BlockEnv = BlockEnv;

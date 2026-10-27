@@ -11,7 +11,6 @@ use revm::{
     inspector::NoOpInspector,
     interpreter::InterpreterResult,
 };
-use std::error::Error;
 
 /// EVM context contains data that EVM needs for execution of [`CustomTxEnv`].
 pub type CustomContext<DB> =
@@ -126,7 +125,7 @@ impl EvmFactory for CustomEvmFactory {
     type Evm<DB: Database, I: Inspector<OpEvmContext<DB>>> = CustomEvm<DB, I, Self::Precompiles>;
     type Context<DB: Database> = OpEvmContext<DB>;
     type Tx = CustomTxEnv;
-    type Error<DBError: Error + Send + Sync + 'static> = EVMError<DBError, OpTxError>;
+    type Error<DBError: revm::database_interface::DBErrorMarker> = EVMError<DBError, OpTxError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type BlockEnv = BlockEnv;
