@@ -314,6 +314,13 @@ where
         self.inner.retain_unknown(announcement)
     }
 
+    fn retain_contains<A>(&self, announcement: &mut A)
+    where
+        A: reth_eth_wire_types::HandleMempoolData,
+    {
+        self.inner.retain_contains(announcement)
+    }
+
     delegate!(fn get(&self, tx_hash: &TxHash) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>>);
     delegate!(fn get_all(&self, txs: Vec<TxHash>) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
     delegate!(fn on_propagated(&self, txs: PropagatedTransactions));
@@ -335,6 +342,7 @@ where
     delegate!(fn get_transactions_by_origin(&self, origin: TransactionOrigin) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
     delegate!(fn get_pending_transactions_by_origin(&self, origin: TransactionOrigin) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
     delegate!(fn unique_senders(&self) -> alloy_primitives::map::AddressSet);
+    delegate!(fn blob_store(&self) -> Box<dyn reth_transaction_pool::BlobStore>);
     delegate!(fn get_blob(&self, tx_hash: TxHash) -> Result<Option<Arc<BlobTransactionSidecarVariant>>, BlobStoreError>);
     delegate!(fn get_all_blobs(&self, tx_hashes: Vec<TxHash>) -> Result<Vec<(TxHash, Arc<BlobTransactionSidecarVariant>)>, BlobStoreError>);
     delegate!(fn get_all_blobs_exact(&self, tx_hashes: Vec<TxHash>) -> Result<Vec<Arc<BlobTransactionSidecarVariant>>, BlobStoreError>);

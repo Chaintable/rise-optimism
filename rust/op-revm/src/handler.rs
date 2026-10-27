@@ -185,6 +185,7 @@ where
     fn last_frame_result(
         &mut self,
         evm: &mut Self::Evm,
+        _original_reservoir: u64,
         frame_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
         let ctx = evm.ctx();
@@ -201,7 +202,7 @@ where
         let state_gas_spent = gas.state_gas_spent();
 
         // Spend the gas limit. Gas is reimbursed when the tx returns successfully.
-        *gas = Gas::new_spent(tx_gas_limit);
+        *gas = Gas::new_spent_with_reservoir(tx_gas_limit, reservoir);
 
         if instruction_result.is_ok() {
             // On Optimism, deposit transactions report gas usage uniquely to other
@@ -245,14 +246,14 @@ where
         }
 
         if instruction_result.is_ok() {
-            // Restore state_gas_spent on successful paths (lost by Gas::new_spent overwrite).
+            // Restore state_gas_spent on successful paths (lost by the gas reset).
             gas.set_state_gas_spent(state_gas_spent);
             gas.set_reservoir(reservoir);
         } else {
             // On failure - zero execution state gas: [bal-devnet notes](<https://notes.ethereum.org/@ethpandaops/bal-devnet-4#Changes-vs-bal-devnet-3>)
             // and [specs](<https://github.com/ethereum/EIPs/pull/11476>)
             gas.set_state_gas_spent(0);
-            gas.set_reservoir(state_gas_spent + reservoir);
+            gas.set_reservoir(reservoir.saturating_add_signed(state_gas_spent));
         }
 
         Ok(())
@@ -490,7 +491,7 @@ mod tests {
         let mut handler =
             OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
-        handler.last_frame_result(&mut evm, &mut exec_result).unwrap();
+        handler.last_frame_result(&mut evm, 0, &mut exec_result).unwrap();
         handler.refund(&mut evm, &mut exec_result, 0);
         *exec_result.gas()
     }
