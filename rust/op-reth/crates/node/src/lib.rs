@@ -46,6 +46,8 @@ pub use reth_optimism_payload_builder::{
 
 pub use reth_optimism_evm::*;
 
+pub use reth_optimism_rpc::debank_capture::DebankEvmConfig;
+
 pub use reth_optimism_storage::OpStorage;
 
 use op_revm as _;

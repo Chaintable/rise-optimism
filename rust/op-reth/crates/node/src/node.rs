@@ -46,6 +46,7 @@ use reth_optimism_payload_builder::{
 use reth_optimism_primitives::{DepositReceipt, OpPrimitives};
 use reth_optimism_rpc::{
     SequencerClient,
+    debank_capture::{DebankEvmConfig, DebankTraceCache},
     eth::{OpEthApiBuilder, ext::OpEthExtApi},
     historical::{HistoricalRpc, HistoricalRpcClient},
     miner::{MinerApiExtServer, OpMinerExtApi},
@@ -237,7 +238,11 @@ impl OpNode {
             self.args;
         ComponentsBuilder::default()
             .node_types::<Node>()
-            .executor(OpExecutorBuilder::default().with_sdm_enabled(self.args.sdm_enabled))
+            .executor(
+                OpExecutorBuilder::default()
+                    .with_sdm_enabled(self.args.sdm_enabled)
+                    .with_debank_trace_cache_blocks(self.args.debank_trace_cache_blocks),
+            )
             .pool(
                 OpPoolBuilder::default()
                     .with_enable_tx_conditional(self.args.enable_tx_conditional)
@@ -334,8 +339,12 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        self.add_ons_builder().build().extend_rpc_modules(|ctx| {
-            let debank_api = OpDebankTraceApiImpl::new(ctx.registry.eth_api().clone());
+        let add_ons: Self::AddOns = self.add_ons_builder().build();
+        add_ons.extend_rpc_modules(|ctx| {
+            let debank_api = OpDebankTraceApiImpl::new(
+                ctx.registry.eth_api().clone(),
+                ctx.node().evm_config().trace_cache().cloned(),
+            );
             ctx.modules.merge_if_module_configured(RethRpcModule::Trace, debank_api.into_rpc())?;
             Ok(())
         })
@@ -1016,6 +1025,8 @@ impl<NetworkT, RpcMiddleware> OpAddOnsBuilder<NetworkT, RpcMiddleware> {
 pub struct OpExecutorBuilder {
     /// Whether SDM is explicitly enabled for integration tests.
     pub sdm_enabled: bool,
+    /// Number of imported blocks whose `trace_debankBlock` traces are kept; 0 disables recording.
+    pub debank_trace_cache_blocks: usize,
 }
 
 impl OpExecutorBuilder {
@@ -1025,20 +1036,28 @@ impl OpExecutorBuilder {
         self.sdm_enabled = sdm_enabled;
         self
     }
+
+    /// Configure how many imported blocks keep their `trace_debankBlock` traces.
+    #[must_use]
+    pub const fn with_debank_trace_cache_blocks(mut self, blocks: usize) -> Self {
+        self.debank_trace_cache_blocks = blocks;
+        self
+    }
 }
 
 impl<Node> ExecutorBuilder<Node> for OpExecutorBuilder
 where
     Node: FullNodeTypes<Types: NodeTypes<ChainSpec: OpHardforks, Primitives = OpPrimitives>>,
 {
-    type EVM =
-        OpEvmConfig<<Node::Types as NodeTypes>::ChainSpec, <Node::Types as NodeTypes>::Primitives>;
+    type EVM = DebankEvmConfig<<Node::Types as NodeTypes>::ChainSpec>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
         let evm_config = OpEvmConfig::new(ctx.chain_spec(), OpRethReceiptBuilder::default())
             .with_sdm_enabled(self.sdm_enabled);
+        let cache = (self.debank_trace_cache_blocks > 0)
+            .then(|| Arc::new(DebankTraceCache::new(self.debank_trace_cache_blocks)));
 
-        Ok(evm_config)
+        Ok(DebankEvmConfig::new(evm_config, cache))
     }
 }
 
